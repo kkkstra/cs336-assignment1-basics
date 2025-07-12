@@ -152,3 +152,45 @@ def scaled_dot_product_attention(Q: torch.Tensor,
 
     attn_weights = softmax(scores, dim=-1)
     return einsum(attn_weights, V, '... seq_q seq_k, ... seq_k d_v -> ... seq_q d_v')
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self,
+                 d_model: int,
+                 num_heads: int,
+                 device: torch.device | None=None,
+                 dtype: torch.dtype | None=None):
+        super().__init__()
+        
+        self.num_heads = num_heads
+        self.d_model = d_model
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+
+        self.W_QKV = Linear(d_model, 3 * d_model, device=device, dtype=dtype)
+        self.W_O = Linear(d_model, d_model, device=device, dtype=dtype)
+
+    def forward(self,
+                x: torch.Tensor, 
+                rope: RotaryPositionalEmbedding | None = None,
+                token_positions: torch.Tensor | None = None) -> torch.Tensor:
+        seq_len = x.size(-2)
+        
+        # qkv projection
+        qkv = self.W_QKV(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = rearrange(q, "... s (h d) -> ... h s d", h=self.num_heads)
+        k = rearrange(k, "... s (h d) -> ... h s d", h=self.num_heads)
+        v = rearrange(v, "... s (h d) -> ... h s d", h=self.num_heads)
+
+        # apply rotary positional embedding for q, k
+        if rope is not None and token_positions is not None:
+            q = rope(q, token_positions)
+            k = rope(k, token_positions)
+            
+        mask = ~torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+
+        y = scaled_dot_product_attention(q, k, v, mask)
+        y = rearrange(y, "... h s d -> ... s (h d)")
+
+        return self.W_O(y)
