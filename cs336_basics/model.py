@@ -97,12 +97,8 @@ class SWiGLU(nn.Module):
         self.W2 = Linear(d_ff, d_model, device=device, dtype=dtype)
         self.W3 = Linear(d_model, d_ff, device=device, dtype=dtype)
 
-    @staticmethod
-    def silu_activation(x: torch.Tensor) -> torch.Tensor:
-        return x * torch.sigmoid(x)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.W2(self.silu_activation(self.W1(x)) * self.W3(x))
+        return self.W2(SiLU.silu_activation(self.W1(x)) * self.W3(x))
 
 
 class RotaryPositionalEmbedding(nn.Module):
@@ -118,8 +114,6 @@ class RotaryPositionalEmbedding(nn.Module):
         freqs = torch.arange(0, d_k, 2, device=device) / d_k
         inv_freqs = 1.0 / (theta**freqs)
         angles = positions * inv_freqs
-
-        print(f"freqs: {freqs}")
 
         self.register_buffer("cos", angles.cos(), persistent=False)
         self.register_buffer("sin", angles.sin(), persistent=False)
@@ -137,3 +131,24 @@ class RotaryPositionalEmbedding(nn.Module):
         x_rot = rearrange([x_rot_even, x_rot_odd], "two ... d_k -> ... (d_k two)")
 
         return x_rot
+    
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """Stable softmax implementation."""
+    x_max = x.max(dim=dim, keepdim=True).values
+    x_exp = torch.exp(x - x_max)
+    return x_exp / x_exp.sum(dim=dim, keepdim=True)
+
+def scaled_dot_product_attention(Q: torch.Tensor,
+                                 K: torch.Tensor,
+                                 V: torch.Tensor,
+                                 mask: torch.Tensor | None = None) -> torch.Tensor:
+    """Compute scaled dot-product attention."""
+    d_k = Q.size(-1)
+    scores = einsum(Q, K, '... seq_q d_k, ... seq_k d_k -> ... seq_q seq_k')
+    scores = scores / math.sqrt(d_k)
+
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float('-inf'))
+
+    attn_weights = softmax(scores, dim=-1)
+    return einsum(attn_weights, V, '... seq_q seq_k, ... seq_k d_v -> ... seq_q d_v')
