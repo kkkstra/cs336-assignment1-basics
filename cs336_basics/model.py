@@ -52,7 +52,7 @@ class RMSNorm(nn.Module):
                  dtype: torch.dtype | None=None):
         super().__init__()
         self.eps = eps
-        self.scale = nn.Parameter(torch.ones(d_model, device=device, dtype=dtype))
+        self.weight = nn.Parameter(torch.ones(d_model, device=device, dtype=dtype))
 
     
     # (batch_size, sequence_length, d_model)
@@ -61,7 +61,7 @@ class RMSNorm(nn.Module):
         x = x.to(torch.float32)
 
         rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        result = x * self.scale / rms
+        result = x * self.weight / rms
 
         return result.to(in_dtype)
 
@@ -184,7 +184,9 @@ class MultiHeadSelfAttention(nn.Module):
         v = rearrange(v, "... s (h d) -> ... h s d", h=self.num_heads)
 
         # apply rotary positional embedding for q, k
-        if rope is not None and token_positions is not None:
+        if rope is not None:
+            if token_positions is None:
+                token_positions = torch.arange(seq_len, device=x.device)
             q = rope(q, token_positions)
             k = rope(k, token_positions)
             
@@ -194,3 +196,27 @@ class MultiHeadSelfAttention(nn.Module):
         y = rearrange(y, "... h s d -> ... s (h d)")
 
         return self.W_O(y)
+    
+class Block(nn.Module):
+    def __init__(self,
+                 d_model: int,
+                 num_heads: int,
+                 d_ff: int,
+                 rope: RotaryPositionalEmbedding | None = None,
+                 device: torch.device | None=None,
+                 dtype: torch.dtype | None=None):
+        super().__init__()
+        
+        self.rope = rope
+
+        self.attn = MultiHeadSelfAttention(d_model, num_heads, device=device, dtype=dtype)
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.ffn = SWiGLU(d_model, d_ff, device=device, dtype=dtype)
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
+
+    def forward(self,
+                x: torch.Tensor,
+                token_positions: torch.Tensor | None = None) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), rope=self.rope, token_positions=token_positions)
+        x = x + self.ffn(self.ln2(x))
+        return x

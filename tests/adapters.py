@@ -297,7 +297,26 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    rope = model.RotaryPositionalEmbedding(theta, d_model // num_heads, max_seq_len)
+    layer = model.Block(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope=rope,
+    )
+
+    # Load the weights into the layer
+    layer.attn.W_QKV.weight.data = torch.cat([weights["attn.q_proj.weight"],
+                                              weights["attn.k_proj.weight"],
+                                              weights["attn.v_proj.weight"]], dim=0)
+    layer.attn.W_O.weight.data = weights["attn.output_proj.weight"]
+    layer.ln1.weight.data = weights["ln1.weight"]
+    layer.ffn.W1.weight.data = weights["ffn.w1.weight"]
+    layer.ffn.W2.weight.data = weights["ffn.w2.weight"]
+    layer.ffn.W3.weight.data = weights["ffn.w3.weight"]
+    layer.ln2.weight.data = weights["ln2.weight"]
+
+    return layer(in_features)
 
 
 def run_transformer_lm(
@@ -403,7 +422,7 @@ def run_rmsnorm(
         RMSNorm of the `in_features`.
     """
     layer = model.RMSNorm(d_model, eps)
-    layer.scale.data = weights
+    layer.weight.data = weights
     return layer(in_features)
 
 
